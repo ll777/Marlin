@@ -32,7 +32,7 @@
   #include "../feature/host_actions.h"
 #endif
 
-#if ENABLED(BROWSE_MEDIA_ON_INSERT, PASSWORD_ON_SD_PRINT_MENU)
+#if BOTH(BROWSE_MEDIA_ON_INSERT, PASSWORD_ON_SD_PRINT_MENU)
   #include "../feature/password/password.h"
 #endif
 
@@ -48,6 +48,10 @@ MarlinUI ui;
 
 #if ENABLED(DWIN_CREALITY_LCD)
   #include "e3v2/creality/dwin.h"
+#elif ENABLED(DWIN_CREALITY_LCD_ENHANCED)
+  #include "e3v2/enhanced/dwin.h"
+#elif ENABLED(DWIN_CREALITY_LCD_JYERSUI)
+  #include "e3v2/jyersui/dwin.h"
 #endif
 
 #if ENABLED(LCD_PROGRESS_BAR) && !IS_TFTGLCD_PANEL
@@ -91,14 +95,23 @@ constexpr uint8_t epps = ENCODER_PULSES_PER_STEP;
   }
 #endif
 
+#if HAS_LCD_CONTRAST
+  uint8_t MarlinUI::contrast; // Initialized by settings.load()
+
+  void MarlinUI::set_contrast(const uint8_t value) {
+    contrast = constrain(value, LCD_CONTRAST_MIN, LCD_CONTRAST_MAX);
+    _set_contrast();
+  }
+#endif
+
 #if HAS_LCD_BRIGHTNESS
   uint8_t MarlinUI::brightness = DEFAULT_LCD_BRIGHTNESS;
   bool MarlinUI::backlight = true;
 
   void MarlinUI::set_brightness(const uint8_t value) {
     backlight = !!value;
-    if (backlight) brightness = constrain(value, MIN_LCD_BRIGHTNESS, MAX_LCD_BRIGHTNESS);
-    // Set brightness on enabled LCD here
+    if (backlight) brightness = constrain(value, LCD_BRIGHTNESS_MIN, LCD_BRIGHTNESS_MAX);
+    _set_brightness();
   }
 #endif
 
@@ -134,6 +147,21 @@ constexpr uint8_t epps = ENCODER_PULSES_PER_STEP;
 
 #if EITHER(HAS_LCD_MENU, EXTENSIBLE_UI)
   bool MarlinUI::lcd_clicked;
+#endif
+
+#if EITHER(HAS_WIRED_LCD, DWIN_CREALITY_LCD_JYERSUI)
+
+  bool MarlinUI::get_blink() {
+    static uint8_t blink = 0;
+    static millis_t next_blink_ms = 0;
+    millis_t ms = millis();
+    if (ELAPSED(ms, next_blink_ms)) {
+      blink ^= 0xFF;
+      next_blink_ms = ms + 1000 - (LCD_UPDATE_INTERVAL) / 2;
+    }
+    return blink != 0;
+  }
+
 #endif
 
 #if HAS_WIRED_LCD
@@ -415,17 +443,6 @@ constexpr uint8_t epps = ENCODER_PULSES_PER_STEP;
     TERN_(HAS_ENCODER_ACTION, encoderDiff = 0);
   }
 
-  bool MarlinUI::get_blink() {
-    static uint8_t blink = 0;
-    static millis_t next_blink_ms = 0;
-    millis_t ms = millis();
-    if (ELAPSED(ms, next_blink_ms)) {
-      blink ^= 0xFF;
-      next_blink_ms = ms + 1000 - (LCD_UPDATE_INTERVAL) / 2;
-    }
-    return blink != 0;
-  }
-
   ////////////////////////////////////////////
   ///////////// Keypad Handling //////////////
   ////////////////////////////////////////////
@@ -663,8 +680,20 @@ constexpr uint8_t epps = ENCODER_PULSES_PER_STEP;
     draw_kill_screen();
   }
 
-  void MarlinUI::quick_feedback(const bool clear_buttons/*=true*/) {
+  #if HAS_TOUCH_SLEEP
+    #if HAS_TOUCH_BUTTONS
+      #include "touch/touch_buttons.h"
+    #else
+      #include "tft/touch.h"
+    #endif
+    // Wake up a sleeping TFT
+    void MarlinUI::wakeup_screen() {
+      TERN(HAS_TOUCH_BUTTONS, touchBt.wakeUp(), touch.wakeUp());
+    }
+  #endif
 
+  void MarlinUI::quick_feedback(const bool clear_buttons/*=true*/) {
+    TERN_(HAS_TOUCH_SLEEP, wakeup_screen()); // Wake up the TFT with most buttons
     TERN_(HAS_LCD_MENU, refresh());
 
     #if HAS_ENCODER_ACTION
@@ -768,7 +797,7 @@ constexpr uint8_t epps = ENCODER_PULSES_PER_STEP;
             TERN_(MULTI_E_MANUAL, axis == E_AXIS ? e_index :) active_extruder
           );
 
-          //SERIAL_ECHOLNPAIR("Add planner.move with Axis ", AS_CHAR(axis_codes[axis]), " at FR ", fr_mm_s);
+          //SERIAL_ECHOLNPGM("Add planner.move with Axis ", AS_CHAR(axis_codes[axis]), " at FR ", fr_mm_s);
 
           axis = NO_AXIS_ENUM;
 
@@ -785,7 +814,7 @@ constexpr uint8_t epps = ENCODER_PULSES_PER_STEP;
       TERN_(MULTI_E_MANUAL, if (move_axis == E_AXIS) e_index = eindex);
       start_time = millis() + (menu_scale < 0.99f ? 0UL : 250UL); // delay for bigger moves
       axis = move_axis;
-      //SERIAL_ECHOLNPAIR("Post Move with Axis ", AS_CHAR(axis_codes[axis]), " soon.");
+      //SERIAL_ECHOLNPGM("Post Move with Axis ", AS_CHAR(axis_codes[axis]), " soon.");
     }
 
     #if ENABLED(AUTO_BED_LEVELING_UBL)
@@ -916,7 +945,7 @@ constexpr uint8_t epps = ENCODER_PULSES_PER_STEP;
 
         if (on_status_screen()) next_lcd_update_ms += (LCD_UPDATE_INTERVAL) * 2;
 
-        TERN_(HAS_ENCODER_ACTION, touch_buttons = touch.read_buttons());
+        TERN_(HAS_ENCODER_ACTION, touch_buttons = touchBt.read_buttons());
 
       #endif
 
@@ -945,6 +974,7 @@ constexpr uint8_t epps = ENCODER_PULSES_PER_STEP;
             abs_diff = epps;                                            // Treat as a full step size
             encoderDiff = (encoderDiff < 0 ? -1 : 1) * abs_diff;        // ...in the spin direction.
           }
+          TERN_(HAS_TOUCH_SLEEP, if (lastEncoderDiff != encoderDiff) wakeup_screen());
           lastEncoderDiff = encoderDiff;
         #endif
 
@@ -971,10 +1001,10 @@ constexpr uint8_t epps = ENCODER_PULSES_PER_STEP;
                   //#define ENCODER_RATE_MULTIPLIER_DEBUG
                   #if ENABLED(ENCODER_RATE_MULTIPLIER_DEBUG)
                     SERIAL_ECHO_START();
-                    SERIAL_ECHOPAIR("Enc Step Rate: ", encoderStepRate);
-                    SERIAL_ECHOPAIR("  Multiplier: ", encoderMultiplier);
-                    SERIAL_ECHOPAIR("  ENCODER_10X_STEPS_PER_SEC: ", ENCODER_10X_STEPS_PER_SEC);
-                    SERIAL_ECHOPAIR("  ENCODER_100X_STEPS_PER_SEC: ", ENCODER_100X_STEPS_PER_SEC);
+                    SERIAL_ECHOPGM("Enc Step Rate: ", encoderStepRate);
+                    SERIAL_ECHOPGM("  Multiplier: ", encoderMultiplier);
+                    SERIAL_ECHOPGM("  ENCODER_10X_STEPS_PER_SEC: ", ENCODER_10X_STEPS_PER_SEC);
+                    SERIAL_ECHOPGM("  ENCODER_100X_STEPS_PER_SEC: ", ENCODER_100X_STEPS_PER_SEC);
                     SERIAL_EOL();
                   #endif
                 }
@@ -1421,6 +1451,7 @@ constexpr uint8_t epps = ENCODER_PULSES_PER_STEP;
 
   void MarlinUI::set_alert_status_P(PGM_P const message) {
     set_status_P(message, 1);
+    TERN_(HAS_TOUCH_SLEEP, wakeup_screen());
     TERN_(HAS_LCD_MENU, return_to_status());
   }
 
@@ -1444,7 +1475,7 @@ constexpr uint8_t epps = ENCODER_PULSES_PER_STEP;
         UNUSED(persist);
       #endif
 
-      #if ENABLED(LCD_PROGRESS_BAR) || BOTH(FILAMENT_LCD_DISPLAY, SDSUPPORT)
+      #if BASIC_PROGRESS_BAR || BOTH(FILAMENT_LCD_DISPLAY, SDSUPPORT)
         const millis_t ms = millis();
       #endif
 
@@ -1459,15 +1490,14 @@ constexpr uint8_t epps = ENCODER_PULSES_PER_STEP;
         next_filament_display = ms + 5000UL; // Show status message for 5s
       #endif
 
-      #if ENABLED(STATUS_MESSAGE_SCROLLING)
-        status_scroll_offset = 0;
-      #endif
+      TERN_(STATUS_MESSAGE_SCROLLING, status_scroll_offset = 0);
     #else // HAS_WIRED_LCD
       UNUSED(persist);
     #endif
 
     TERN_(EXTENSIBLE_UI, ExtUI::onStatusChanged(status_message));
-    TERN_(DWIN_CREALITY_LCD, DWIN_StatusChanged(status_message));
+    TERN_(HAS_DWIN_E3V2_BASIC, DWIN_StatusChanged(status_message));
+    TERN_(DWIN_CREALITY_LCD_JYERSUI, CrealityDWIN.Update_Status(status_message));
   }
 
   #if ENABLED(STATUS_MESSAGE_SCROLLING)
@@ -1533,6 +1563,7 @@ constexpr uint8_t epps = ENCODER_PULSES_PER_STEP;
       defer_status_screen();
     #endif
 
+    TERN_(HAS_TOUCH_SLEEP, wakeup_screen());
     TERN_(HOST_PROMPT_SUPPORT, host_prompt_open(PROMPT_PAUSE_RESUME, PSTR("UI Pause"), PSTR("Resume")));
 
     LCD_MESSAGEPGM(MSG_PRINT_PAUSED);
@@ -1692,9 +1723,8 @@ constexpr uint8_t epps = ENCODER_PULSES_PER_STEP;
     const PauseMode mode/*=PAUSE_MODE_SAME*/,
     const uint8_t extruder/*=active_extruder*/
   ) {
-    if (mode == PAUSE_MODE_SAME)
-      return;
     pause_mode = mode;
+    ExtUI::pauseModeStatus = message;
     switch (message) {
       case PAUSE_MESSAGE_PARKING:  ExtUI::onUserConfirmRequired_P(GET_TEXT(MSG_PAUSE_PRINT_PARKING));
       case PAUSE_MESSAGE_CHANGING: ExtUI::onUserConfirmRequired_P(GET_TEXT(MSG_FILAMENT_CHANGE_INIT));
@@ -1703,11 +1733,7 @@ constexpr uint8_t epps = ENCODER_PULSES_PER_STEP;
       case PAUSE_MESSAGE_INSERT:   ExtUI::onUserConfirmRequired_P(GET_TEXT(MSG_FILAMENT_CHANGE_INSERT));
       case PAUSE_MESSAGE_LOAD:     ExtUI::onUserConfirmRequired_P(GET_TEXT(MSG_FILAMENT_CHANGE_LOAD));
       case PAUSE_MESSAGE_PURGE:
-        #if ENABLED(ADVANCED_PAUSE_CONTINUOUS_PURGE)
-          ExtUI::onUserConfirmRequired_P(GET_TEXT(MSG_FILAMENT_CHANGE_CONT_PURGE));
-        #else
-          ExtUI::onUserConfirmRequired_P(GET_TEXT(MSG_FILAMENT_CHANGE_PURGE));
-        #endif
+        ExtUI::onUserConfirmRequired_P(GET_TEXT(TERN(ADVANCED_PAUSE_CONTINUOUS_PURGE, MSG_FILAMENT_CHANGE_CONT_PURGE, MSG_FILAMENT_CHANGE_PURGE)));
       case PAUSE_MESSAGE_RESUME:   ExtUI::onUserConfirmRequired_P(GET_TEXT(MSG_FILAMENT_CHANGE_RESUME));
       case PAUSE_MESSAGE_HEAT:     ExtUI::onUserConfirmRequired_P(GET_TEXT(MSG_FILAMENT_CHANGE_HEAT));
       case PAUSE_MESSAGE_HEATING:  ExtUI::onUserConfirmRequired_P(GET_TEXT(MSG_FILAMENT_CHANGE_HEATING));

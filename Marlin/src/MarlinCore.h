@@ -23,10 +23,6 @@
 
 #include "inc/MarlinConfig.h"
 
-#ifdef DEBUG_GCODE_PARSER
-  #include "gcode/parser.h"
-#endif
-
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,15 +37,6 @@ inline void idle_no_sleep() { idle(true); }
   extern uint8_t G38_move;          // Flag to tell the ISR that G38 is in progress, and the type
   extern bool G38_did_trigger;      // Flag from the ISR to indicate the endstop changed
 #endif
-
-/**
- * The axis order in all axis related arrays is X, Y, Z, E
- */
-void enable_e_steppers();
-void enable_all_steppers();
-void disable_e_stepper(const uint8_t e);
-void disable_e_steppers();
-void disable_all_steppers();
 
 void kill(PGM_P const lcd_error=nullptr, PGM_P const lcd_component=nullptr, const bool steppers_off=false);
 void minkill(const bool steppers_off=false);
